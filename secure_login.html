@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<title>Secure Login System</title>
+<!--
+  SECURE LOGIN SYSTEM - single-file browser version (HTML + CSS + JavaScript)
+
+  Features
+   1. Password hashing: PBKDF2-SHA256, 310,000 iterations, unique 16-byte random salt
+   2. Constant-time comparison for hashes and codes (timing-attack protection)
+   3. Password policy + live checklist + common-password blocklist
+   4. Account lockout: 5 failed attempts -> locked for 5 minutes
+   5. Generic error messages + dummy-hash check (no user enumeration)
+   6. TOTP two-factor authentication (RFC 6238) - Google Authenticator / Authy compatible
+   7. Session tokens: 256-bit random, stored only as SHA-256 hash, 15-minute expiry
+   8. Change password (revokes all sessions), enable / disable 2FA
+   9. Audit log of security events
+  10. XSS-safe output (escaping) and a strict Content-Security-Policy
+
+  NOTE: this is a browser-only demo. Data lives in this browser's localStorage.
+  A real system must perform authentication on a server.
+-->
+<style>
+:root{--bg:#f4f6fb;--card:#fff;--text:#1b2433;--muted:#5b6678;--accent:#2f5bea;--border:#d9dfeb;--err:#c62828;--ok:#2e7d32;--warn:#b26a00;--code:#eef1f8}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1420;--card:#192030;--text:#e8ecf5;--muted:#9aa6bd;--accent:#6d8cff;--border:#2b3550;--err:#ef5350;--ok:#66bb6a;--warn:#ffb74d;--code:#111827}}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.5}
+header{text-align:center;padding:26px 16px 8px}
+header h1{margin:0;font-size:1.6rem}
+header p{margin:6px 0 0;color:var(--muted);font-size:.92rem}
+main{max-width:480px;margin:0 auto;padding:12px 16px 40px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:16px}
+h2{margin:0 0 10px;font-size:1.15rem}
+label{display:block;margin:12px 0 4px;font-size:.85rem;color:var(--muted)}
+input[type=text],input[type=password]{width:100%;padding:11px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:16px}
+input:focus{outline:2px solid var(--accent);outline-offset:1px}
+button{font:inherit;cursor:pointer}
+.btn{width:100%;margin-top:14px;padding:12px;border:0;border-radius:8px;background:var(--accent);color:#fff;font-size:1rem;font-weight:600}
+.btn:disabled{opacity:.6;cursor:wait}
+.btn.alt{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+.btn.danger{background:transparent;color:var(--err);border:1px solid var(--err)}
+.tabs{display:flex;gap:8px;margin-bottom:6px}
+.tab{flex:1;padding:10px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--muted)}
+.tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.msg{padding:10px 12px;border-radius:8px;margin-bottom:14px;border:1px solid var(--border);font-size:.93rem}
+.msg.error{color:var(--err)}.msg.success{color:var(--ok)}.msg.info{color:var(--muted)}
+.note{font-size:.82rem;color:var(--warn);border:1px dashed var(--warn);border-radius:8px;padding:8px 10px;margin-bottom:14px}
+.checks{list-style:none;padding:0;margin:8px 0 0;font-size:.85rem}
+.checks li{color:var(--muted)}.checks li.ok{color:var(--ok)}
+.checks li::before{content:"\2717  "}.checks li.ok::before{content:"\2713  "}
+.meter{height:6px;border-radius:4px;background:var(--border);margin-top:8px;overflow:hidden}
+.meter i{display:block;height:100%;width:0;background:var(--err);transition:width .2s,background .2s}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.badge{display:inline-block;padding:2px 10px;border-radius:99px;font-size:.8rem;font-weight:600;border:1px solid var(--border)}
+.badge.on{color:var(--ok);border-color:var(--ok)}.badge.off{color:var(--muted)}
+code{background:var(--code);padding:3px 6px;border-radius:4px;word-break:break-all;font-size:.85rem}
+table{width:100%;border-collapse:collapse;font-size:.82rem}
+td{padding:6px 4px;border-bottom:1px solid var(--border);vertical-align:top}
+td:first-child{color:var(--muted);white-space:nowrap}
+.show{display:flex;align-items:center;gap:6px;margin-top:10px;font-size:.85rem;color:var(--muted)}
+details{margin-bottom:16px;font-size:.9rem}
+summary{cursor:pointer;color:var(--accent);margin-bottom:6px}
+details ul{margin:6px 0;padding-left:20px;color:var(--muted)}
+footer{text-align:center;font-size:.8rem;color:var(--muted)}
+footer button{background:none;border:0;color:var(--muted);text-decoration:underline;font-size:.8rem}
+</style>
+</head>
+<body>
+<header>
+  <h1>&#128274; Secure Login System</h1>
+  <p>Cyber security project &middot; all-in-one HTML file</p>
+</header>
+<main>
+  <div id="app"></div>
+  <details>
+    <summary>Security features in this app</summary>
+    <ul>
+      <li>PBKDF2-SHA256 (310k iterations) with unique salt per user</li>
+      <li>Constant-time comparison of hashes and 2FA codes</li>
+      <li>Strong password policy and common-password blocklist</li>
+      <li>Lockout after 5 failed attempts (5 minutes)</li>
+      <li>Same error for unknown user and wrong password</li>
+      <li>TOTP two-factor authentication (RFC 6238)</li>
+      <li>Hashed session tokens that expire after 15 minutes</li>
+      <li>Audit log of security events</li>
+      <li>Output escaping and strict Content-Security-Policy</li>
+    </ul>
+  </details>
+  <footer>Educational demo &middot; <button id="reset" type="button">Reset demo data</button></footer>
+</main>
+
+<script>
+(() => {
+'use strict';
+
+// ====================================================================== CONFIG
+const CFG = { ITER: 310000, MAX_FAILS: 5, LOCK_MS: 5 * 60 * 1000, SESSION_MS: 15 * 60 * 1000 };
+const COMMON = new Set(['password','password1','password123','12345678','123456789','qwerty123',
+  'qwertyuiop','iloveyou','admin123','welcome1','letmein123','abc12345','p@ssw0rd','p@ssword1']);
+const USERNAME_RE = /^[A-Za-z0-9_]{3,20}$/;
+
+// <utils>
+const enc = new TextEncoder();
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const rand = n => crypto.getRandomValues(new Uint8Array(n));
+const b64 = u8 => btoa(String.fromCharCode(...u8));
+const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+const sha256 = async s => hex(await crypto.subtle.digest('SHA-256', enc.encode(s)));
+
+function ctEqual(a, b) {                       // constant-time comparison
+  if (typeof a === 'string') a = enc.encode(a);
+  if (typeof b === 'string') b = enc.encode(b);
+  let diff = a.length ^ b.length;
+  const n = Math.max(a.length, b.length);
+  for (let i = 0; i < n; i++) diff |= (a[i] || 0) ^ (b[i] || 0);
+  return diff === 0;
+}
+
+async function derive(pw, salt, iterations) {
+  const key = await crypto.subtle.importKey('raw', enc.encode(pw), 'PBKDF2', false, ['deriveBits']);
+  return new Uint8Array(await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', hash: 'SHA-256', salt, iterations }, key, 256));
+}
+async function hashPassword(pw) {
+  const salt = rand(16);
+  return `pbkdf2-sha256$${CFG.ITER}$${b64(salt)}$${b64(await derive(pw, salt, CFG.ITER))}`;
+}
+async function verifyPassword(pw, stored) {
+  try {
+    const [, it, s, h] = stored.split('$');
+    return ctEqual(await derive(pw, unb64(s), +it), unb64(h));
+  } catch { return false; }
+}
+
+// Base32 + TOTP (RFC 4648 / RFC 6238)
+const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+function b32enc(u8) {
+  let bits = 0, val = 0, out = '';
+  for (const b of u8) {
+    val = (val << 8) | b; bits += 8;
+    while (bits >= 5) { out += B32[(val >>> (bits - 5)) & 31]; bits -= 5; }
+    val &= (1 << bits) - 1;
+  }
+  if (bits > 0) out += B32[(val << (5 - bits)) & 31];
+  return out;
+}
+function b32dec(s) {
+  let bits = 0, val = 0; const out = [];
+  for (const c of s) {
+    const i = B32.indexOf(c); if (i < 0) continue;
+    val = (val << 5) | i; bits += 5;
+    if (bits >= 8) { out.push((val >>> (bits - 8)) & 255); bits -= 8; val &= (1 << bits) - 1; }
+  }
+  return new Uint8Array(out);
+}
+async function hotp(secret, counter) {
+  const key = await crypto.subtle.importKey('raw', b32dec(secret), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+  const buf = new ArrayBuffer(8), dv = new DataView(buf);
+  dv.setUint32(0, Math.floor(counter / 2 ** 32)); dv.setUint32(4, counter >>> 0);
+  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, buf));
+  const o = mac[19] & 15;
+  const code = (((mac[o] & 0x7f) << 24) | (mac[o + 1] << 16) | (mac[o + 2] << 8) | mac[o + 3]) % 1e6;
+  return String(code).padStart(6, '0');
+}
+async function verifyTotp(secret, code) {
+  code = String(code).trim();
+  if (!/^\d{6}$/.test(code)) return false;
+  const c = Math.floor(Date.now() / 30000);
+  let ok = false;
+  for (const d of [-1, 0, 1]) if (ctEqual(await hotp(secret, c + d), code)) ok = true;
+  return ok;
+}
+// </utils>
+
+// ===================================================================== STORAGE
+const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
+const save = (k, v) => localStorage.setItem(k, JSON.stringify(v));
+const ukey = name => 'u:' + name.toLowerCase();       // prefix avoids "__proto__" style keys
+
+function audit(user, event) {
+  const a = load('sls_audit', []);
+  a.push({ t: Date.now(), u: String(user).slice(0, 20).toLowerCase(), e: event });
+  save('sls_audit', a.slice(-300));
+}
+
+// ==================================================================== SESSIONS
+async function newSession(username) {
+  const token = b64(rand(32)).replace(/[+/=]/g, '');
+  const all = load('sls_sessions', {}), now = Date.now();
+  for (const k in all) if (all[k].exp < now) delete all[k];            // prune expired
+  all[await sha256(token)] = { u: username, exp: now + CFG.SESSION_MS };
+  save('sls_sessions', all);
+  sessionStorage.setItem('sls_token', token);                           // only the hash is persisted
+}
+async function currentSession() {
+  const token = sessionStorage.getItem('sls_token');
+  if (!token) return null;
+  const all = load('sls_sessions', {}), h = await sha256(token), s = all[h];
+  if (!s || s.exp < Date.now()) {
+    if (s) { delete all[h]; save('sls_sessions', all); }
+    sessionStorage.removeItem('sls_token');
+    return null;
+  }
+  return s;
+}
+async function endSession() {
+  const token = sessionStorage.getItem('sls_token');
+  if (token) { const all = load('sls_sessions', {}); delete all[await sha256(token)]; save('sls_sessions', all); }
+  sessionStorage.removeItem('sls_token');
+}
+function revokeUserSessions(username) {
+  const all = load('sls_sessions', {});
+  for (const k in all) if (all[k].u === username) delete all[k];
+  save('sls_sessions', all);
+}
+
+// ============================================================ PASSWORD POLICY
+function policy(pw, username = '') {
+  return [
+    { ok: pw.length >= 12, label: 'At least 12 characters' },
+    { ok: /[a-z]/.test(pw), label: 'A lowercase letter' },
+    { ok: /[A-Z]/.test(pw), label: 'An uppercase letter' },
+    { ok: /\d/.test(pw), label: 'A digit' },
+    { ok: /[^A-Za-z0-9]/.test(pw), label: 'A special character' },
+    { ok: pw.length > 0 && !COMMON.has(pw.toLowerCase()), label: 'Not a commonly used password' },
+    { ok: !username || !pw.toLowerCase().includes(username.toLowerCase()), label: 'Does not contain your username' },
+  ];
+}
+const policyErrors = (pw, u) => policy(pw, u).filter(c => !c.ok).map(c => c.label.toLowerCase());
+
+let DUMMY_HASH = null;                                   // for constant-ish timing on unknown users
+hashPassword(b64(rand(12))).then(h => DUMMY_HASH = h);
+
+// ======================================================================== STATE
+const app = document.getElementById('app');
+let view = 'auth', tab = 'login', pending = null, msg = null, setupSecret = null, timer = null;
+const flash = (type, text) => { msg = { type, text }; };
+const banner = () => { if (!msg) return ''; const m = msg; msg = null; return `<div class="msg ${m.type}" role="alert">${esc(m.text)}</div>`; };
+const $ = s => app.querySelector(s);
+
+function busy(btn, text) { btn.disabled = true; btn.dataset.t = btn.textContent; btn.textContent = text || 'Working...'; }
+
+// ======================================================================= ACTIONS
+async function doRegister(name, pw, confirm) {
+  if (!USERNAME_RE.test(name)) return fail('Invalid username (3-20 letters, digits or underscore).');
+  const errs = policyErrors(pw, name);
+  if (errs.length) return fail('Password must have: ' + errs.join(', ') + '.');
+  if (!ctEqual(pw, confirm)) return fail('Passwords do not match.');
+  const users = load('sls_users', {});
+  if (users[ukey(name)]) return fail('Registration failed. Try a different username.');
+  users[ukey(name)] = { name, hash: await hashPassword(pw), fails: 0, lockedUntil: 0, totp: null, created: Date.now() };
+  save('sls_users', users);
+  audit(name, 'REGISTER_SUCCESS');
+  tab = 'login'; flash('success', 'Account created. You can now log in.');
+}
+
+async function recordFailure(users, u, event) {
+  u.fails = (u.fails || 0) + 1;
+  if (u.fails >= CFG.MAX_FAILS) { u.fails = 0; u.lockedUntil = Date.now() + CFG.LOCK_MS; audit(u.name, 'ACCOUNT_LOCKED'); }
+  else audit(u.name, event);
+  save('sls_users', users);
+}
+
+async function finishLogin(users, u) {
+  u.fails = 0; u.lockedUntil = 0; save('sls_users', users);
+  await newSession(u.name);
+  audit(u.name, 'LOGIN_SUCCESS');
+  pending = null; view = 'dash';
+  flash('success', 'Welcome, ' + u.name + '!');
+}
+
+async function doLogin(name, pw) {
+  const users = load('sls_users', {}), u = users[ukey(name)];
+  if (!u) {
+    await verifyPassword(pw, DUMMY_HASH || await hashPassword('x'));   // equalise timing
+    audit(name, 'LOGIN_FAIL_UNKNOWN_USER');
+    return fail('Invalid username or password.');
+  }
+  if (u.lockedUntil > Date.now()) {
+    audit(u.name, 'LOGIN_BLOCKED_LOCKED');
+    return fail(`Account temporarily locked. Try again in ${Math.ceil((u.lockedUntil - Date.now()) / 1000)} seconds.`);
+  }
+  if (!(await verifyPassword(pw, u.hash))) {
+    await recordFailure(users, u, 'LOGIN_FAIL_BAD_PASSWORD');
+    return fail('Invalid username or password.');
+  }
+  if (u.totp) { pending = { name: u.name, until: Date.now() + 5 * 60 * 1000 }; view = 'twofa'; return; }
+  await finishLogin(users, u);
+}
+
+async function doTwoFactor(code) {
+  if (!pending || pending.until < Date.now()) { pending = null; view = 'auth'; return fail('Session timed out. Please log in again.'); }
+  const users = load('sls_users', {}), u = users[ukey(pending.name)];
+  if (u.lockedUntil > Date.now()) return fail('Account temporarily locked.');
+  if (await verifyTotp(u.totp, code)) return finishLogin(users, u);
+  await recordFailure(users, u, 'LOGIN_FAIL_BAD_2FA');
+  fail('Invalid 2FA code.');
+}
+
+async function doEnable2fa(code) {
+  const s = await currentSession(); if (!s) return;
+  if (setupSecret && await verifyTotp(setupSecret, code)) {
+    const users = load('sls_users', {}); users[ukey(s.u)].totp = setupSecret; save('sls_users', users);
+    audit(s.u, '2FA_ENABLED'); setupSecret = null; flash('success', 'Two-factor authentication enabled.');
+  } else fail('Incorrect code. Try again.');
+}
+
+async function doDisable2fa(pw) {
+  const s = await currentSession(); if (!s) return;
+  const users = load('sls_users', {}), u = users[ukey(s.u)];
+  if (!(await verifyPassword(pw, u.hash))) { audit(s.u, '2FA_DISABLE_FAIL'); return fail('Password incorrect.'); }
+  u.totp = null; save('sls_users', users); audit(s.u, '2FA_DISABLED'); flash('success', '2FA disabled.');
+}
+
+async function doChangePassword(cur, nw, conf) {
+  const s = await currentSession(); if (!s) return;
+  const users = load('sls_users', {}), u = users[ukey(s.u)];
+  if (!(await verifyPassword(cur, u.hash))) { audit(s.u, 'PASSWORD_CHANGE_FAIL'); return fail('Current password is incorrect.'); }
+  const errs = policyErrors(nw, s.u);
+  if (errs.length) return fail('Password must have: ' + errs.join(', ') + '.');
+  if (!ctEqual(nw, conf)) return fail('Passwords do not match.');
+  u.hash = await hashPassword(nw); save('sls_users', users);
+  revokeUserSessions(s.u); sessionStorage.removeItem('sls_token');
+  audit(s.u, 'PASSWORD_CHANGED'); view = 'auth'; tab = 'login';
+  flash('success', 'Password changed. Please log in again.');
+}
+
+async function doLogout() {
+  const s = await currentSession(); await endSession();
+  if (s) audit(s.u, 'LOGOUT');
+  view = 'auth'; tab = 'login'; flash('success', 'Logged out.');
+}
+
+function fail(text) { flash('error', text); }
+
+// ======================================================================== VIEWS
+const passwordBox = (id, label, extra = '') => `
+  <label for="${id}">${label}</label>
+  <input id="${id}" type="password" autocomplete="${extra || 'off'}" maxlength="128" required>`;
+
+function authView() {
+  const login = `
+    <form id="loginForm" autocomplete="on">
+      <label for="lu">Username</label><input id="lu" type="text" maxlength="20" autocomplete="username" required>
+      ${passwordBox('lp', 'Password', 'current-password')}
+      <label class="show"><input type="checkbox" class="toggle"> Show password</label>
+      <button class="btn" type="submit">Login</button>
+    </form>`;
+  const reg = `
+    <form id="regForm" autocomplete="off">
+      <label for="ru">Username (3-20 letters, digits, _)</label><input id="ru" type="text" maxlength="20" required>
+      ${passwordBox('rp', 'Password', 'new-password')}
+      <div class="meter"><i id="meter"></i></div>
+      <ul class="checks" id="checks"></ul>
+      ${passwordBox('rc', 'Confirm password', 'new-password')}
+      <label class="show"><input type="checkbox" class="toggle"> Show passwords</label>
+      <button class="btn" type="submit">Create account</button>
+    </form>`;
+  return `${banner()}
+    <div class="note">Browser-only demo: accounts are stored in this browser. Real systems authenticate on a server.</div>
+    <div class="card">
+      <div class="tabs">
+        <button class="tab ${tab === 'login' ? 'on' : ''}" data-tab="login" type="button">Login</button>
+        <button class="tab ${tab === 'register' ? 'on' : ''}" data-tab="register" type="button">Register</button>
+      </div>
+      ${tab === 'login' ? login : reg}
+    </div>`;
+}
+
+function twofaView() {
+  return `${banner()}<div class="card"><h2>Two-factor authentication</h2>
+    <form id="tfForm" autocomplete="off">
+      <label for="tc">6-digit code from your authenticator app</label>
+      <input id="tc" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required>
+      <button class="btn" type="submit">Verify</button>
+      <button class="btn alt" type="button" id="tfCancel">Cancel</button>
+    </form></div>`;
+}
+
+async function dashView(s) {
+  const u = load('sls_users', {})[ukey(s.u)];
+  const events = load('sls_audit', []).filter(e => e.u === s.u.toLowerCase()).slice(-10).reverse();
+  let twofa;
+  if (u.totp) {
+    twofa = `<p>Status: <span class="badge on">ON</span></p>
+      <form id="dis2fa" autocomplete="off">${passwordBox('dp', 'Current password to disable')}
+      <button class="btn danger" type="submit">Disable 2FA</button></form>`;
+  } else if (setupSecret) {
+    const uri = `otpauth://totp/SecureLogin:${encodeURIComponent(s.u)}?secret=${setupSecret}&issuer=SecureLogin`;
+    twofa = `<p>In Google Authenticator / Authy choose <b>Enter a setup key</b> (time-based) and enter:</p>
+      <p><code id="sec">${esc(setupSecret)}</code></p>
+      <p class="muted" style="font-size:.8rem">URI: <code>${esc(uri)}</code></p>
+      <form id="en2fa" autocomplete="off">
+        <label for="ec">Enter the 6-digit code to confirm</label>
+        <input id="ec" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required>
+        <button class="btn" type="submit">Confirm</button>
+        <button class="btn alt" type="button" id="cancel2fa">Cancel</button>
+      </form>`;
+  } else {
+    twofa = `<p>Status: <span class="badge off">OFF</span></p>
+      <button class="btn" type="button" id="start2fa">Enable 2FA</button>`;
+  }
+  return `${banner()}
+    <div class="card"><div class="row"><h2>Welcome, ${esc(s.u)}</h2><button class="btn alt" style="width:auto;margin:0;padding:8px 14px" id="logout" type="button">Logout</button></div>
+      <p class="muted" style="margin:0;color:var(--muted);font-size:.85rem">Session expires in <b id="cd"></b></p></div>
+    <div class="card"><h2>Two-factor authentication</h2>${twofa}</div>
+    <div class="card"><h2>Change password</h2>
+      <form id="cpForm" autocomplete="off">
+        ${passwordBox('cp1', 'Current password', 'current-password')}
+        ${passwordBox('cp2', 'New password', 'new-password')}
+        ${passwordBox('cp3', 'Confirm new password', 'new-password')}
+        <button class="btn" type="submit">Change password</button>
+      </form></div>
+    <div class="card"><h2>Recent security events</h2>
+      <table>${events.map(e => `<tr><td>${esc(new Date(e.t).toLocaleString())}</td><td>${esc(e.e)}</td></tr>`).join('')}</table></div>`;
+}
+
+// ====================================================================== WIRING
+async function render() {
+  clearInterval(timer);
+  const s = await currentSession();
+  if (s) view = 'dash'; else if (view === 'dash') view = 'auth';
+  if (view === 'dash') app.innerHTML = await dashView(s);
+  else if (view === 'twofa') app.innerHTML = twofaView();
+  else app.innerHTML = authView();
+  bind(s);
+}
+
+function onSubmit(sel, handler) {
+  const f = $(sel); if (!f) return;
+  f.addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = f.querySelector('button[type=submit]'); busy(btn);
+    try { await handler(); } catch (err) { console.error(err); flash('error', 'Something went wrong.'); }
+    await render();
+  });
+}
+
+function bind(s) {
+  app.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => { tab = b.dataset.tab; render(); }));
+  app.querySelectorAll('.toggle').forEach(c => c.addEventListener('change', () =>
+    app.querySelectorAll('input[type=password],input[data-pw]').forEach(i => { i.type = c.checked ? 'text' : 'password'; i.dataset.pw = 1; })));
+
+  onSubmit('#loginForm', () => doLogin($('#lu').value.trim(), $('#lp').value));
+  onSubmit('#regForm', () => doRegister($('#ru').value.trim(), $('#rp').value, $('#rc').value));
+  onSubmit('#tfForm', () => doTwoFactor($('#tc').value));
+  onSubmit('#en2fa', () => doEnable2fa($('#ec').value));
+  onSubmit('#dis2fa', () => doDisable2fa($('#dp').value));
+  onSubmit('#cpForm', () => doChangePassword($('#cp1').value, $('#cp2').value, $('#cp3').value));
+
+  const on = (sel, fn) => { const el = $(sel); if (el) el.addEventListener('click', fn); };
+  on('#tfCancel', () => { pending = null; view = 'auth'; render(); });
+  on('#logout', async () => { await doLogout(); render(); });
+  on('#start2fa', () => { setupSecret = b32enc(rand(20)); render(); });
+  on('#cancel2fa', () => { setupSecret = null; render(); });
+
+  const rp = $('#rp');                                   // live password checklist + strength meter
+  if (rp) {
+    const update = () => {
+      const c = policy(rp.value, $('#ru').value), n = c.filter(x => x.ok).length;
+      $('#checks').innerHTML = c.map(x => `<li class="${x.ok ? 'ok' : ''}">${esc(x.label)}</li>`).join('');
+      const m = $('#meter'); m.style.width = (n / c.length * 100) + '%';
+      m.style.background = n < 4 ? 'var(--err)' : n < 7 ? 'var(--warn)' : 'var(--ok)';
+    };
+    rp.addEventListener('input', update); $('#ru').addEventListener('input', update); update();
+  }
+
+  if (s) {                                               // session countdown
+    const tick = () => {
+      const left = s.exp - Date.now();
+      if (left <= 0) { flash('error', 'Session expired. Please log in again.'); render(); return; }
+      const cd = $('#cd'); if (cd) cd.textContent = `${Math.floor(left / 60000)}:${String(Math.floor(left / 1000) % 60).padStart(2, '0')}`;
+    };
+    tick(); timer = setInterval(tick, 1000);
+  }
+}
+
+document.getElementById('reset').addEventListener('click', () => {
+  if (confirm('Delete all demo accounts, sessions and logs from this browser?')) {
+    ['sls_users', 'sls_sessions', 'sls_audit'].forEach(k => localStorage.removeItem(k));
+    sessionStorage.clear(); pending = null; setupSecret = null; view = 'auth'; tab = 'register';
+    flash('info', 'Demo data cleared.'); render();
+  }
+});
+
+if (!window.crypto || !crypto.subtle) {
+  app.innerHTML = '<div class="msg error">This page needs a secure context (HTTPS or localhost) for the Web Crypto API.</div>';
+} else {
+  render();
+}
+})();
+</script>
+</body>
+</html>
